@@ -107,6 +107,12 @@ bool WiFiManager::addParameter(WiFiManagerParameter *p) {
 void WiFiManager::setupConfigPortal() {
   dnsServer.reset(new DNSServer());
   server.reset(new ESP8266WebServer(80));
+  delay(500); 	// without this restar isnot occured perfectly
+  if (!MDNS.begin("smiot")) {
+    DEBUG_WM(F("Error setting up MDNS responder!"));
+  }
+  DEBUG_WM(F("mDNS responder started"));
+  DEBUG_WM(F("Go to to smiot.com"));
 
   DEBUG_WM(F(""));
   _configPortalStart = millis();
@@ -145,9 +151,12 @@ void WiFiManager::setupConfigPortal() {
   /* Setup web pages: root, wifi config pages, SO captive portal detectors and not found. */
   server->on(String(F("/")).c_str(), std::bind(&WiFiManager::handleRoot, this));
   server->on(String(F("/wifi")).c_str(), std::bind(&WiFiManager::handleWifi, this, true));
+  server->on(String(F("/wifilogin")).c_str(), std::bind(&WiFiManager::handleWifilogin, this));
   server->on(String(F("/0wifi")).c_str(), std::bind(&WiFiManager::handleWifi, this, false));
+  server->on(String(F("/wifiloginsubmit")).c_str(), std::bind(&WiFiManager::handleWifiloginSubmit, this));
   server->on(String(F("/wifisave")).c_str(), std::bind(&WiFiManager::handleWifiSave, this));
   server->on(String(F("/i")).c_str(), std::bind(&WiFiManager::handleInfo, this));
+
   server->on(String(F("/r")).c_str(), std::bind(&WiFiManager::handleReset, this));
   //server->on("/generate_204", std::bind(&WiFiManager::handle204, this));  //Android/Chrome OS captive portal check.
   server->on(String(F("/fwlink")).c_str(), std::bind(&WiFiManager::handleRoot, this));  //Microsoft captive portal. Maybe not needed. Might be handled by notFound handler.
@@ -187,7 +196,11 @@ boolean WiFiManager::configPortalHasTimeout(){
       _configPortalStart = millis(); // kludge, bump configportal start time to skew timeouts
       return false;
     }
-    return (millis() > _configPortalStart + _configPortalTimeout);
+	if(millis() > (_configPortalStart + _configPortalTimeout)){
+		return true;
+	}else{
+		return false;
+	}
 }
 
 boolean WiFiManager::startConfigPortal() {
@@ -225,7 +238,17 @@ boolean  WiFiManager::startConfigPortal(char const *apName, char const *apPasswo
   while(1){
 
     // check if timeout
-    if(configPortalHasTimeout()) break;
+    if(configPortalHasTimeout()) {
+		DEBUG_WM(F("Soft AP mode timeout occured."));
+		server->stop();
+		delay(200);
+		dnsServer->stop();
+		delay(200);
+		WiFi.mode(WIFI_STA);
+		(100);
+		WiFi.begin();
+		break;
+	}
 
     //DNS
     dnsServer->processNextRequest();
@@ -451,16 +474,161 @@ void WiFiManager::handleRoot() {
   }
 
   String page = FPSTR(HTTP_HEADER);
-  page.replace("{v}", "Options");
+  page.replace("{v}", "Pranisheba login credentials");
   page += FPSTR(HTTP_SCRIPT);
   page += FPSTR(HTTP_STYLE);
+  page += FPSTR(STYLE_FORM_POP_UP);
   page += _customHeadElement;
   page += FPSTR(HTTP_HEADER_END);
-  page += String(F("<h1>"));
+  // page += FPSTR(HTTP_PORTAL_OPTIONS);
+  page += FPSTR(HTTP_LOGIN_PAGE);
+  page += String(F("</br>"));  
+  page += FPSTR(PRANISHEBA_LOGO);
+  page += String(F("<h1 align=\"center\">")); 
   page += _apName;
   page += String(F("</h1>"));
-  page += String(F("<h3>WiFiManager</h3>"));
-  page += FPSTR(HTTP_PORTAL_OPTIONS);
+  page += String(F("<h3 align=\"center\">Shurjomukhi Pranisheba</h3>"));
+  
+  page += _customHeadElement;
+  page += FPSTR(HTTP_HEADER_END);
+
+  if (true) {
+    int n = WiFi.scanNetworks();
+    DEBUG_WM(F("Scan done"));
+    if (n == 0) {
+      DEBUG_WM(F("No networks found"));
+      page += F("No networks found. Refresh to scan again.");
+    } else {
+
+      //sort networks
+      int indices[n];
+      for (int i = 0; i < n; i++) {
+        indices[i] = i;
+      }
+
+      // RSSI SORT
+
+      // old sort
+      for (int i = 0; i < n; i++) {
+        for (int j = i + 1; j < n; j++) {
+          if (WiFi.RSSI(indices[j]) > WiFi.RSSI(indices[i])) {
+            std::swap(indices[i], indices[j]);
+          }
+        }
+      }
+
+      /*std::sort(indices, indices + n, [](const int & a, const int & b) -> bool
+        {
+        return WiFi.RSSI(a) > WiFi.RSSI(b);
+        });*/
+
+      // remove duplicates ( must be RSSI sorted )
+      if (_removeDuplicateAPs) {
+        String cssid;
+        for (int i = 0; i < n; i++) {
+          if (indices[i] == -1) continue;
+          cssid = WiFi.SSID(indices[i]);
+          for (int j = i + 1; j < n; j++) {
+            if (cssid == WiFi.SSID(indices[j])) {
+              DEBUG_WM("DUP AP: " + WiFi.SSID(indices[j]));
+              indices[j] = -1; // set dup aps to index -1
+            }
+          }
+        }
+      }
+
+      //display networks in page
+      for (int i = 0; i < n; i++) {
+        if (indices[i] == -1) continue; // skip dups
+        DEBUG_WM(WiFi.SSID(indices[i]));
+        DEBUG_WM(WiFi.RSSI(indices[i]));
+        int quality = getRSSIasQuality(WiFi.RSSI(indices[i]));
+
+        if (_minimumQuality == -1 || _minimumQuality < quality) {
+          String item = FPSTR(HTTP_ITEM);
+          String rssiQ;
+          rssiQ += quality;
+          item.replace("{v}", WiFi.SSID(indices[i]));
+          item.replace("{r}", rssiQ);
+          if (WiFi.encryptionType(indices[i]) != ENC_TYPE_NONE) {
+            item.replace("{i}", "l");
+          } else {
+            item.replace("{i}", "");
+          }
+          //DEBUG_WM(item);
+          page += item;
+          delay(0);
+        } else {
+          DEBUG_WM(F("Skipping due to quality"));
+        }
+
+      }
+      page += "<br/>";
+    }
+  }
+
+  page += FPSTR(HTTP_FORM_START);
+  char parLength[5];
+  // add the extra parameters to the form
+  for (int i = 0; i < _paramsCount; i++) {
+    if (_params[i] == NULL) {
+      break;
+    }
+
+    String pitem = FPSTR(HTTP_FORM_PARAM);
+    if (_params[i]->getID() != NULL) {
+      pitem.replace("{i}", _params[i]->getID());
+      pitem.replace("{n}", _params[i]->getID());
+      pitem.replace("{p}", _params[i]->getPlaceholder());
+      snprintf(parLength, 5, "%d", _params[i]->getValueLength());
+      pitem.replace("{l}", parLength);
+      pitem.replace("{v}", _params[i]->getValue());
+      pitem.replace("{c}", _params[i]->getCustomHTML());
+    } else {
+      pitem = _params[i]->getCustomHTML();
+    }
+
+    page += pitem;
+  }
+  if (_params[0] != NULL) {
+    page += "<br/>";
+  }
+
+  if (_sta_static_ip) {
+
+    String item = FPSTR(HTTP_FORM_PARAM);
+    item.replace("{i}", "ip");
+    item.replace("{n}", "ip");
+    item.replace("{p}", "Static IP");
+    item.replace("{l}", "15");
+    item.replace("{v}", _sta_static_ip.toString());
+
+    page += item;
+
+    item = FPSTR(HTTP_FORM_PARAM);
+    item.replace("{i}", "gw");
+    item.replace("{n}", "gw");
+    item.replace("{p}", "Static Gateway");
+    item.replace("{l}", "15");
+    item.replace("{v}", _sta_static_gw.toString());
+
+    page += item;
+
+    item = FPSTR(HTTP_FORM_PARAM);
+    item.replace("{i}", "sn");
+    item.replace("{n}", "sn");
+    item.replace("{p}", "Subnet");
+    item.replace("{l}", "15");
+    item.replace("{v}", _sta_static_sn.toString());
+
+    page += item;
+
+    page += "<br/>";
+  }
+
+  page += FPSTR(HTTP_FORM_END);
+  page += FPSTR(HTTP_SCAN_LINK);
+
   page += FPSTR(HTTP_END);
 
   server->sendHeader("Content-Length", String(page.length()));
@@ -468,13 +636,31 @@ void WiFiManager::handleRoot() {
 
 }
 
+void WiFiManager::handleWifilogin(void){
+  String page = FPSTR(HTTP_HEADER);
+  page.replace("{v}", "Login to Pranisheba");
+  page += FPSTR(HTTP_SCRIPT);
+  page += FPSTR(HTTP_STYLE);
+  page += _customHeadElement;
+  page += FPSTR(HTTP_HEADER_END);
+  page += FPSTR(HTTP_LOGIN_FORM_START);
+  page += FPSTR(HTTP_FORM_END);
+  page += FPSTR(HTTP_END);
+
+  server->sendHeader("Content-Length", String(page.length()));
+  server->send(200, "text/html", page);
+
+
+}
+
 /** Wifi config page handler */
 void WiFiManager::handleWifi(boolean scan) {
 
   String page = FPSTR(HTTP_HEADER);
-  page.replace("{v}", "Config ESP");
+  page.replace("{v}", "Login to Pranisheba");
   page += FPSTR(HTTP_SCRIPT);
   page += FPSTR(HTTP_STYLE);
+  page += FPSTR(STYLE_FORM_POP_UP);
   page += _customHeadElement;
   page += FPSTR(HTTP_HEADER_END);
 
@@ -625,6 +811,59 @@ void WiFiManager::handleWifi(boolean scan) {
 }
 
 /** Handle the WLAN save form and redirect to WLAN config page again */
+
+void WiFiManager::handleWifiloginSubmit(void)
+{
+  String page = FPSTR(HTTP_HEADER);
+  page.replace("{v}", "Pranisheba Configure Server");
+  page += FPSTR(HTTP_SCRIPT);
+  page += FPSTR(HTTP_STYLE);
+  page += _customHeadElement;
+  page += FPSTR(HTTP_HEADER_END);
+
+
+  DEBUG_WM(F("HTTP Login..."));
+  String _tempUserName="", _tempPass="";
+
+  _tempUserName = server->arg("u").c_str();
+  _tempPass     = server->arg("h").c_str();
+  DEBUG_WM(F("Received Username : "));
+  DEBUG_WM(_tempUserName);
+  DEBUG_WM(F("Received Password: "));
+  DEBUG_WM(_tempPass);
+
+  if(_tempUserName.equals(_httpUserName))
+  {
+    DEBUG_WM(F("Username Matched"));
+    if(_tempPass.equals(_httpPassWord))
+    {
+      DEBUG_WM(F("Password Matched"));
+      page += FPSTR(PRANISHEBA_LOGO);
+      page += String(F("<h1 align=\"center\">")); 
+      page += _apName;
+      page += String(F("</h1>"));
+      page += String(F("<h3 align=\"center\">Shurjomukhi Pranisheba</h3>"));
+      page += FPSTR(HTTP_PORTAL_OPTIONS);
+
+      // server->sendHeader("Content-Length", String(page.length()));
+      // server->send(200, "text/html", page);
+    }else
+    {
+      DEBUG_WM(F("Password Mismatched"));
+      page += String(F("<h3 align=\"center\">Username and Password Mismatched. Please Try Again.</h3>"));
+      page += FPSTR(HTTP_LOGIN_PAGE);
+    }
+    
+  }else{
+    DEBUG_WM(F("Username Mismatched"));
+    page += String(F("<h3 align=\"center\">Username Mismatched. Please Try Again.</h3>"));
+    page += FPSTR(HTTP_LOGIN_PAGE);
+  }
+  page += FPSTR(HTTP_END);    
+  server->sendHeader("Content-Length", String(page.length()));
+  server->send(200, "text/html", page);
+}
+
 void WiFiManager::handleWifiSave() {
   DEBUG_WM(F("WiFi save"));
 

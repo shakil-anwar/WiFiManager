@@ -1,0 +1,3 @@
+debug on off
+configure mqtt
+configure address
