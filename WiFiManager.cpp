@@ -487,7 +487,7 @@ void WiFiManager::handleRoot() {
   page += String(F("<h1 align=\"center\">")); 
   page += _apName;
   page += String(F("</h1>"));
-  page += String(F("<h3 align=\"center\">Shurjomukhi Pranisheba</h3>"));
+  page += String(F("<h3 align=\"center\">Adorsho Pranisheba</h3>"));
   
   page += _customHeadElement;
   page += FPSTR(HTTP_HEADER_END);
@@ -820,6 +820,11 @@ void WiFiManager::handleWifiloginSubmit(void)
   page += FPSTR(HTTP_STYLE);
   page += _customHeadElement;
   page += FPSTR(HTTP_HEADER_END);
+  page += FPSTR(PRANISHEBA_LOGO);
+  page += String(F("<h1 align=\"center\">")); 
+  page += _apName;
+  page += String(F("</h1>"));
+  page += String(F("<h3 align=\"center\">Adorsho Pranisheba</h3>"));
 
 
   DEBUG_WM(F("HTTP Login..."));
@@ -838,11 +843,7 @@ void WiFiManager::handleWifiloginSubmit(void)
     if(_tempPass.equals(_httpPassWord))
     {
       DEBUG_WM(F("Password Matched"));
-      page += FPSTR(PRANISHEBA_LOGO);
-      page += String(F("<h1 align=\"center\">")); 
-      page += _apName;
-      page += String(F("</h1>"));
-      page += String(F("<h3 align=\"center\">Shurjomukhi Pranisheba</h3>"));
+      
       page += FPSTR(HTTP_PORTAL_OPTIONS);
 
       // server->sendHeader("Content-Length", String(page.length()));
